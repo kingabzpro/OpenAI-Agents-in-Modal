@@ -12,6 +12,7 @@ from agents.extensions.sandbox import ModalSandboxClient, ModalSandboxClientOpti
 from agents.run import RunConfig
 from agents.sandbox import Manifest, SandboxAgent, SandboxRunConfig
 from agents.sandbox.entries import File
+from agents.sandbox.errors import WorkspaceStartError
 
 
 DEFAULT_README = """# Support Ticket Triage
@@ -144,8 +145,17 @@ class ReusableSandbox:
                 return self._sandbox, True
 
             await self.close_locked()
-            self._sandbox = await self._client.create(manifest=manifest, options=options)
-            await self._sandbox.start()
+            sandbox = await self._client.create(manifest=manifest, options=options)
+            try:
+                await sandbox.start()
+            except Exception:
+                try:
+                    await sandbox.aclose()
+                finally:
+                    await self._client.delete(sandbox)
+                raise
+
+            self._sandbox = sandbox
             self._fingerprint = fingerprint
             return self._sandbox, False
 
@@ -170,6 +180,25 @@ class ReusableSandbox:
 SANDBOX_CACHE = ReusableSandbox()
 
 
+async def run_agent_once(
+    agent: SandboxAgent,
+    task: str,
+    manifest: Manifest,
+    options: ModalSandboxClientOptions,
+    fingerprint: str,
+) -> tuple[str, bool]:
+    sandbox, reused = await SANDBOX_CACHE.session(manifest, options, fingerprint)
+    result = await Runner.run(
+        agent,
+        task,
+        run_config=RunConfig(
+            sandbox=SandboxRunConfig(session=sandbox),
+            workflow_name="Modal sandbox chat app",
+        ),
+    )
+    return str(result.final_output), reused
+
+
 async def chat_with_agent(
     message: str,
     history: Any,
@@ -186,7 +215,6 @@ async def chat_with_agent(
     fingerprint = fingerprint_manifest(manifest)
     agent = build_agent(manifest=manifest, model=model, instructions=instructions)
     options = build_options()
-    sandbox, reused = await SANDBOX_CACHE.session(manifest, options, fingerprint)
 
     previous = format_history(history)
     task = message.strip()
@@ -199,30 +227,45 @@ async def chat_with_agent(
         )
 
     try:
-        result = await Runner.run(
-            agent,
-            task,
-            run_config=RunConfig(
-                sandbox=SandboxRunConfig(session=sandbox),
-                workflow_name="Modal sandbox chat app",
-            ),
+        output, reused = await run_agent_once(
+            agent=agent,
+            task=task,
+            manifest=manifest,
+            options=options,
+            fingerprint=fingerprint,
         )
         elapsed = round(time.monotonic() - started, 2)
         sandbox_state = "reused" if reused else "created"
-        return f"{result.final_output}\n\n`Sandbox {sandbox_state} in {elapsed}s.`"
+        return f"{output}\n\n`Sandbox {sandbox_state} in {elapsed}s.`"
+    except WorkspaceStartError:
+        await SANDBOX_CACHE.close()
+
+        try:
+            output, _ = await run_agent_once(
+                agent=agent,
+                task=task,
+                manifest=manifest,
+                options=options,
+                fingerprint=fingerprint,
+            )
+            elapsed = round(time.monotonic() - started, 2)
+            return f"{output}\n\n`Sandbox recovered and recreated in {elapsed}s.`"
+        except Exception as exc:
+            elapsed = round(time.monotonic() - started, 2)
+            return (
+                f"Sandbox run failed after retry in {elapsed}s: "
+                f"`{type(exc).__name__}: {exc}`"
+            )
     except Exception as exc:
         elapsed = round(time.monotonic() - started, 2)
         return f"Sandbox run failed after {elapsed}s: `{type(exc).__name__}: {exc}`"
 
 
-async def reset_cached_sandbox() -> str:
-    started = time.monotonic()
+async def reset_cached_sandbox() -> None:
     try:
         await SANDBOX_CACHE.close()
-        elapsed = round(time.monotonic() - started, 2)
-        return f"Cached sandbox reset in {elapsed}s."
     except Exception as exc:
-        return f"Reset failed: `{type(exc).__name__}: {exc}`"
+        print(f"Reset failed: {type(exc).__name__}: {exc}")
 
 
 async def respond(
@@ -264,39 +307,46 @@ def build_app() -> gr.Blocks:
             instructions = gr.Textbox(
                 label="Instructions",
                 value=DEFAULT_INSTRUCTIONS,
-                lines=4,
+                lines=3,
             )
             model = gr.Textbox(label="Model", value=DEFAULT_MODEL)
 
         chatbot = gr.Chatbot(
             label="Conversation",
-            height=560,
+            height=340,
             buttons=["copy", "copy_all"],
-            placeholder=(
-                "Try: Check the project files and explain what this service does."
-            ),
         )
 
-        with gr.Row():
+        with gr.Row(equal_height=True):
             message = gr.Textbox(
                 label="Message",
                 placeholder="Ask it to check files, create files, or run tests...",
                 lines=2,
                 max_lines=6,
-                scale=8,
+                scale=1,
+                min_width=240,
                 show_label=False,
             )
-            send_button = gr.Button("Send", variant="primary", scale=1)
 
-        with gr.Row():
-            clear_button = gr.ClearButton(
-                [message, chatbot],
-                value="Clear chat",
-                scale=1,
-            )
-            reset_button = gr.Button("Reset sandbox", scale=1)
+            with gr.Column(scale=0, min_width=70):
+                with gr.Row(equal_height=True):
+                    send_button = gr.Button(
+                        "➜",
+                        variant="primary",
+                        scale=0,
+                        min_width=58,
+                    )
 
-        reset_status = gr.Markdown()
+        gr.Examples(
+            examples=[
+                "Check the project files and explain what this service does.",
+                "Create a new helper file for routing rules and add tests for it.",
+                "Run the tests and tell me what needs to be fixed before release.",
+            ],
+            inputs=message,
+            label="Examples",
+            run_on_click=False,
+        )
 
         chat_inputs = [message, chatbot, instructions, model]
         chat_outputs = [message, chatbot]
@@ -316,10 +366,10 @@ def build_app() -> gr.Blocks:
             concurrency_id="modal-sandbox",
             api_name="chat",
         )
-        reset_button.click(
+        chatbot.clear(
             reset_cached_sandbox,
             inputs=None,
-            outputs=reset_status,
+            outputs=None,
             concurrency_limit=1,
             concurrency_id="modal-sandbox",
             api_name="reset_sandbox",
@@ -346,4 +396,5 @@ if __name__ == "__main__":
         server_name=server_name,
         server_port=server_port,
         show_error=True,
+        theme=gr.themes.Ocean(),
     )
