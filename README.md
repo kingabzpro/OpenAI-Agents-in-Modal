@@ -1,8 +1,8 @@
 # OpenAI Agents in Modal
 
-Run an OpenAI Agents SDK `SandboxAgent` inside a [Modal](https://modal.com) sandbox — with both a CLI demo and a Gradio chat UI.
+Run an OpenAI Agents SDK `SandboxAgent` inside a [Modal](https://modal.com) sandbox, with both a CLI demo and a Gradio chat UI.
 
-The agent operates on a preloaded workspace (a small "Support Ticket Triage" service) and can inspect files, create or edit code, and run tests — all inside an isolated Modal container.
+The agent operates on a preloaded workspace (a small "Support Ticket Triage" service) and can inspect files, create or edit code, and run tests, all inside an isolated Modal container.
 
 ## How it works
 
@@ -20,7 +20,7 @@ ModalSandboxClient  ──►  Modal sandbox (ephemeral container)
                               └── docs/release-checks.md
 ```
 
-The web app (`app.py`) keeps a **reusable sandbox** across requests — it fingerprints the workspace manifest and only recreates the container when the files change. If a sandbox becomes stale, it automatically retries with a fresh one.
+The web app (`app.py`) keeps a **reusable sandbox** across requests, it fingerprints the workspace manifest and only recreates the container when the files change. If a sandbox becomes stale, it automatically retries with a fresh one.
 
 ## Prerequisites
 
