@@ -1,31 +1,82 @@
 # OpenAI Agents in Modal
 
-Small demo showing how to run an OpenAI Agents SDK `SandboxAgent` inside a Modal sandbox.
+Run an OpenAI Agents SDK `SandboxAgent` inside a [Modal](https://modal.com) sandbox — with both a CLI demo and a Gradio chat UI.
 
-The project includes:
+The agent operates on a preloaded workspace (a small "Support Ticket Triage" service) and can inspect files, create or edit code, and run tests — all inside an isolated Modal container.
 
-- `main.py`: a minimal command-line sandbox run.
-- `app.py`: a clean Gradio chat UI for asking the agent to inspect files, create files, edit code, and run tests in a reusable sandbox.
-- `requirements.txt`: pinned Python dependencies.
+## How it works
+
+```
+User prompt
+    │
+    ▼
+SandboxAgent (openai-agents SDK)
+    │  instructs via tool calls
+    ▼
+ModalSandboxClient  ──►  Modal sandbox (ephemeral container)
+                              ├── README.md
+                              ├── src/app.py
+                              ├── tests/test_app.py
+                              └── docs/release-checks.md
+```
+
+The web app (`app.py`) keeps a **reusable sandbox** across requests — it fingerprints the workspace manifest and only recreates the container when the files change. If a sandbox becomes stale, it automatically retries with a fresh one.
+
+## Prerequisites
+
+- Python 3.11+
+- [OpenAI API key](https://platform.openai.com/api-keys) — set as `OPENAI_API_KEY`
+- [Modal account](https://modal.com) and token — run `modal token new` after installing Modal
 
 ## Setup
 
 ```bash
 pip install -r requirements.txt
+modal token new        # one-time authentication
 ```
 
-Make sure your OpenAI and Modal credentials are configured before running the examples.
+## Run the CLI demo
 
-## Run the CLI Demo
+Starts a single sandbox, runs one agent query against the preloaded workspace, prints the result, then tears down the sandbox.
 
 ```bash
 python main.py
 ```
 
-## Run the Web App
+**Sample output:**
+
+```
+This service routes customer support tickets to the right team based on urgency:
+enterprise customers and tickets mentioning "outage" go to support-ops with high
+priority; everything else routes to customer-care at normal priority. One pre-release
+check: run the ticket routing tests to confirm the routing logic matches the current
+escalation policy.
+```
+
+## Run the web app
 
 ```bash
 python app.py
 ```
 
-Open the local Gradio URL, usually `http://127.0.0.1:7860`.
+Open [http://127.0.0.1:7860](http://127.0.0.1:7860) in your browser.
+
+The chat interface lets you talk to the agent across multiple turns. The sandbox is reused between messages so file edits persist within a session. Clearing the chat resets the sandbox.
+
+**Example prompts to try:**
+
+- `Check the project files and explain what this service does.`
+- `Create a new helper file for routing rules and add tests for it.`
+- `Run the tests and tell me what needs to be fixed before release.`
+
+You can also adjust the model and system instructions via the **Agent instructions** accordion.
+
+## Project structure
+
+| File | Description |
+|------|-------------|
+| `main.py` | Minimal CLI demo — single run, single sandbox |
+| `app.py` | Gradio chat UI with reusable sandbox and retry logic |
+| `requirements.txt` | Pinned Python dependencies |
+
+

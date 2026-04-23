@@ -12,7 +12,6 @@ from agents.extensions.sandbox import ModalSandboxClient, ModalSandboxClientOpti
 from agents.run import RunConfig
 from agents.sandbox import Manifest, SandboxAgent, SandboxRunConfig
 from agents.sandbox.entries import File
-from agents.sandbox.errors import WorkspaceStartError
 
 
 DEFAULT_README = """# Support Ticket Triage
@@ -62,7 +61,7 @@ DEFAULT_INSTRUCTIONS = (
 DEFAULT_MODEL = "gpt-5.4-mini"
 DEFAULT_APP_NAME = "openai-agents-modal-demo"
 WORKSPACE_PERSISTENCE = "tar"
-SANDBOX_TIMEOUT_SECONDS = 300
+SANDBOX_TIMEOUT_SECONDS = 600
 
 
 def build_manifest() -> Manifest:
@@ -145,17 +144,8 @@ class ReusableSandbox:
                 return self._sandbox, True
 
             await self.close_locked()
-            sandbox = await self._client.create(manifest=manifest, options=options)
-            try:
-                await sandbox.start()
-            except Exception:
-                try:
-                    await sandbox.aclose()
-                finally:
-                    await self._client.delete(sandbox)
-                raise
-
-            self._sandbox = sandbox
+            self._sandbox = await self._client.create(manifest=manifest, options=options)
+            await self._sandbox.start()
             self._fingerprint = fingerprint
             return self._sandbox, False
 
@@ -180,25 +170,6 @@ class ReusableSandbox:
 SANDBOX_CACHE = ReusableSandbox()
 
 
-async def run_agent_once(
-    agent: SandboxAgent,
-    task: str,
-    manifest: Manifest,
-    options: ModalSandboxClientOptions,
-    fingerprint: str,
-) -> tuple[str, bool]:
-    sandbox, reused = await SANDBOX_CACHE.session(manifest, options, fingerprint)
-    result = await Runner.run(
-        agent,
-        task,
-        run_config=RunConfig(
-            sandbox=SandboxRunConfig(session=sandbox),
-            workflow_name="Modal sandbox chat app",
-        ),
-    )
-    return str(result.final_output), reused
-
-
 async def chat_with_agent(
     message: str,
     history: Any,
@@ -215,6 +186,7 @@ async def chat_with_agent(
     fingerprint = fingerprint_manifest(manifest)
     agent = build_agent(manifest=manifest, model=model, instructions=instructions)
     options = build_options()
+    sandbox, reused = await SANDBOX_CACHE.session(manifest, options, fingerprint)
 
     previous = format_history(history)
     task = message.strip()
@@ -227,35 +199,17 @@ async def chat_with_agent(
         )
 
     try:
-        output, reused = await run_agent_once(
-            agent=agent,
-            task=task,
-            manifest=manifest,
-            options=options,
-            fingerprint=fingerprint,
+        result = await Runner.run(
+            agent,
+            task,
+            run_config=RunConfig(
+                sandbox=SandboxRunConfig(session=sandbox),
+                workflow_name="Modal sandbox chat app",
+            ),
         )
         elapsed = round(time.monotonic() - started, 2)
         sandbox_state = "reused" if reused else "created"
-        return f"{output}\n\n`Sandbox {sandbox_state} in {elapsed}s.`"
-    except WorkspaceStartError:
-        await SANDBOX_CACHE.close()
-
-        try:
-            output, _ = await run_agent_once(
-                agent=agent,
-                task=task,
-                manifest=manifest,
-                options=options,
-                fingerprint=fingerprint,
-            )
-            elapsed = round(time.monotonic() - started, 2)
-            return f"{output}\n\n`Sandbox recovered and recreated in {elapsed}s.`"
-        except Exception as exc:
-            elapsed = round(time.monotonic() - started, 2)
-            return (
-                f"Sandbox run failed after retry in {elapsed}s: "
-                f"`{type(exc).__name__}: {exc}`"
-            )
+        return f"{result.final_output}\n\n`Sandbox {sandbox_state} in {elapsed}s.`"
     except Exception as exc:
         elapsed = round(time.monotonic() - started, 2)
         return f"Sandbox run failed after {elapsed}s: `{type(exc).__name__}: {exc}`"
