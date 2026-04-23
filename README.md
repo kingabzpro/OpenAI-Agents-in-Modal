@@ -61,6 +61,9 @@ python app.py
 
 Open [http://127.0.0.1:7860](http://127.0.0.1:7860) in your browser.
 
+<img width="1332" height="841" alt="image" src="https://github.com/user-attachments/assets/4b521b92-8764-488d-92b8-0ff2a96d0f14" />
+
+
 The chat interface lets you talk to the agent across multiple turns. The sandbox is reused between messages so file edits persist within a session. Clearing the chat resets the sandbox.
 
 **Example prompts to try:**
